@@ -84,6 +84,18 @@ type PhysicalIndexLookUpReader struct {
 	tablePlan  PhysicalPlan
 }
 
+//append by hanke
+
+type PhysicalMuIIndexAndLookUpReader struct {
+
+	physicalSchemaProducer
+	IndexPlans []PhysicalPlan
+	TablePlans []PhysicalPlan
+	indexPlan []PhysicalPlan
+	tablePlan   PhysicalPlan
+
+}
+
 // PhysicalIndexScan represents an index scan plan.
 type PhysicalIndexScan struct {
 	physicalSchemaProducer

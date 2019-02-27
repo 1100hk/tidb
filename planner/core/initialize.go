@@ -81,6 +81,8 @@ const (
 	TypeTableReader = "TableReader"
 	// TypeIndexReader is the type of IndexReader.
 	TypeIndexReader = "IndexReader"
+	//append by hanke
+	TypeMUlIndexAndReader="MUlIndexAndReader"
 	// TypeWindow is the type of Window.
 	TypeWindow = "Window"
 )
@@ -294,6 +296,22 @@ func (p PhysicalTableScan) Init(ctx sessionctx.Context) *PhysicalTableScan {
 // Init initializes PhysicalIndexScan.
 func (p PhysicalIndexScan) Init(ctx sessionctx.Context) *PhysicalIndexScan {
 	p.basePhysicalPlan = newBasePhysicalPlan(ctx, TypeIdxScan, &p)
+	return &p
+}
+//append by hanke
+func (p PhysicalMuIIndexAndLookUpReader) Init(ctx sessionctx.Context) *PhysicalMuIIndexAndLookUpReader  {
+	p.basePhysicalPlan =newBasePhysicalPlan(ctx,TypeMUlIndexAndReader,&p)
+	p.TablePlans = flattenPushDownPlan(p.tablePlan)
+	//p.IndexPlans = flattenPushDownPlan(p.indexPlan)
+	indexPlanLen:=len(p.indexPlan)
+	for i:=0;i<indexPlanLen;i++{
+		//p.IndexPlans=append(p.IndexPlans,p.indexPlan[i].Children()[0])
+		tempFlattenPhysicalPlan:=flattenPushDownPlan(p.indexPlan[i])
+		for j:=0;j<len(tempFlattenPhysicalPlan);j++{
+			p.IndexPlans=append(p.IndexPlans,tempFlattenPhysicalPlan[j])
+		}
+	}
+	p.schema = p.tablePlan.Schema()
 	return &p
 }
 

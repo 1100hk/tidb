@@ -210,6 +210,12 @@ func finishCopTask(ctx sessionctx.Context, task task) task {
 	newTask := &rootTask{
 		cst: t.cst,
 	}
+
+	//append by hanke
+	if t.indexPlans!=nil{
+		p:=PhysicalMuIIndexAndLookUpReader{tablePlan:t.tablePlan,indexPlan:t.indexPlans}.Init(ctx)
+		newTask.p=p
+	}
 	if t.indexPlan != nil && t.tablePlan != nil {
 		p := PhysicalIndexLookUpReader{tablePlan: t.tablePlan, indexPlan: t.indexPlan}.Init(ctx)
 		p.stats = t.tablePlan.statsInfo()

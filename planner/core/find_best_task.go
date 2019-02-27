@@ -283,7 +283,154 @@ func (ds *DataSource) findBestTask(prop *property.PhysicalProperty) (t task, err
 			}
 		}
 	}
+//append by hanke
+	var canAccessPathByMUI bool
+
+	if len(ds.possibleAccessPaths)>2 {
+		canAccessPathByMUI = true
+		if canAccessPathByMUI {
+			muiIndexTask, _ := ds.convertToMUIIndexScan(prop)
+
+			t = muiIndexTask
+		}
+	}
 	return
+}
+
+
+//append by hanke
+//convertToMUlIndexScan convert the DataSource to mulitiple index scan with double read
+
+//append by hanke
+
+func (ds *DataSource) convertToMUIIndexScan(/*Type string,*/prop *property.PhysicalProperty/*,tableFilters []expression.Expression*/) (Task task,err error) {
+	cop:=&copTask{}
+	muiIndex:=make([]PhysicalPlan,len(ds.possibleAccessPaths)-1)
+	pos:=0
+	for _,path:=range ds.possibleAccessPaths{
+		if path.isTablePath{
+			continue
+		}
+		idx := path.index
+		is := PhysicalIndexScan{
+			Table:            ds.tableInfo,
+			TableAsName:      ds.TableAsName,
+			DBName:           ds.DBName,
+			Columns:          ds.Columns,
+			Index:            idx,
+			IdxCols:          path.idxCols,
+			IdxColLens:       path.idxColLens,
+			AccessCondition:  path.accessConds,
+			Ranges:           path.ranges,
+			filterCondition:  path.indexFilters,
+			dataSourceSchema: ds.schema,
+			isPartition:      ds.isPartition,
+			physicalTableID:  ds.physicalTableID,
+		}.Init(ds.ctx)
+		statsTbl := ds.statisticTable
+		if statsTbl.Indices[idx.ID] != nil {
+			is.Hist = &statsTbl.Indices[idx.ID].Histogram
+		}
+		rowCount := path.countAfterAccess
+		//append by hanke
+		muiIndex[pos]=is
+		pos++
+		if !isCoveringIndex(ds.schema.Columns, is.Index.Columns, is.Table.PKIsHandle) {
+			// If it's parent requires single read task, return max cost.
+			if prop.TaskTp == property.CopSingleReadTaskType {
+				return invalidTask, nil
+			}
+			// On this way, it's double read case.
+			//append by hanke
+			if cop.tablePlan==nil {
+				ts := PhysicalTableScan{
+					Columns:         ds.Columns,
+					Table:           is.Table,
+					isPartition:     ds.isPartition,
+					physicalTableID: ds.physicalTableID,
+				}.Init(ds.ctx)
+				ts.SetSchema(ds.schema.Clone())
+				cop.tablePlan = ts
+			}
+		} else if prop.TaskTp == property.CopDoubleReadTaskType {
+			// If it's parent requires double read task, return max cost.
+			return invalidTask, nil
+		}
+		is.initSchema(ds.id, idx, cop.tablePlan != nil)
+		// Check if this plan matches the property.
+		matchProperty := false
+		if !prop.IsEmpty() {
+			for i, col := range idx.Columns {
+				// not matched
+				if col.Name.L == prop.Cols[0].ColName.L {
+					matchProperty = matchIndicesProp(idx.Columns[i:], prop.Cols)
+					break
+				} else if i >= path.eqCondCount {
+					break
+				}
+			}
+		}
+		// Only use expectedCnt when it's smaller than the count we calculated.
+		// e.g. IndexScan(count1)->After Filter(count2). The `ds.stats.RowCount` is count2. count1 is the one we need to calculate
+		// If expectedCnt and count2 are both zero and we go into the below `if` block, the count1 will be set to zero though it's shouldn't be.
+		if (matchProperty || prop.IsEmpty()) && prop.ExpectedCnt < ds.stats.RowCount {
+			selectivity := ds.stats.RowCount / path.countAfterAccess
+			rowCount = math.Min(prop.ExpectedCnt/selectivity, rowCount)
+		}
+		is.stats = property.NewSimpleStats(rowCount)
+		is.stats.UsePseudoStats = ds.statisticTable.Pseudo
+		cop.cst = rowCount * scanFactor
+		if matchProperty {
+			if prop.Desc {
+				is.Desc = true
+				cop.cst = rowCount * descScanFactor
+			}
+			if cop.tablePlan != nil {
+				cop.tablePlan.(*PhysicalTableScan).appendExtraHandleCol(ds)
+			}
+			cop.keepOrder = true
+			is.KeepOrder = true
+			is.addPushedDownSelection(cop, ds, prop.ExpectedCnt, path)
+		} else {
+			expectedCnt := math.MaxFloat64
+			if prop.IsEmpty() {
+				expectedCnt = prop.ExpectedCnt
+			} else {
+				return invalidTask, nil
+			}
+			is.addPushedDownSelection(cop, ds, expectedCnt, path)
+		}
+
+	}
+	cop.indexPlans=muiIndex
+	cop.cst=0
+	Task=cop
+
+	if prop.TaskTp == property.RootTaskType {
+		//Task = finishCopTask(ds.ctx, Task)
+		t, ok := Task.(*copTask)
+		if !ok {
+			println("hanke")
+		}
+
+		newTask := &rootTask{}
+		if t.indexPlans!=nil{
+			if t.tablePlan!=nil {
+				t.tablePlan.(*PhysicalTableScan).stats = t.indexPlans[0].statsInfo()
+				//t.cst += t.count() * scanFactor
+				t.cst=0
+			}
+			p:=PhysicalMuIIndexAndLookUpReader{tablePlan:t.tablePlan,indexPlan:t.indexPlans}.Init(ds.ctx)
+			newTask.p=p
+		}
+
+		Task=newTask
+
+	} else if _, ok := Task.(*rootTask); ok {
+		return invalidTask, nil
+	}
+	return Task, nil
+
 }
 
 func isCoveringIndex(columns []*expression.Column, indexColumns []*model.IndexColumn, pkIsHandle bool) bool {
